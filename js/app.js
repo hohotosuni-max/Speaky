@@ -313,7 +313,7 @@
     $('micBtn').classList.toggle('is-listening', on);
     $('wave').classList.toggle('is-on', on || state.drill.playing);
     if (on) {
-      $('micLabel').textContent = '듣고 있어요… 다 말하면 다시 눌러 주세요';
+      $('micLabel').textContent = '듣고 있어요… 말이 끝나면 자동으로 멈춰요';
       $('micLabel').classList.add('live');
     } else {
       $('micLabel').classList.remove('live');
@@ -890,7 +890,7 @@
     state.rp.listening = on;
     $('chatMicBtn').classList.toggle('is-listening', on);
     $('composeNote').textContent = on
-      ? '듣고 있어요… 다 말하면 마이크를 다시 눌러 주세요'
+      ? '듣고 있어요… 말이 끝나면 자동으로 마무리돼요'
       : micHintText();
   }
 

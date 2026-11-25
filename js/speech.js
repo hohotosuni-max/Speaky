@@ -185,6 +185,13 @@
     return !!(window.SpeechRecognition || window.webkitSpeechRecognition);
   }
 
+  /* iOS Safari 대응 타이밍
+     · START_DELAY: TTS·오디오 재생 직후 마이크를 바로 열면 iOS 오디오 세션이
+       충돌해 감도가 떨어지므로 잠깐 쉬었다 시작합니다.
+     · SILENCE: 말이 잡힌 뒤 이만큼 조용하면 문장이 끝난 것으로 보고 자동 마무리. */
+  var RECOGNITION_START_DELAY_MS = 150;
+  var RECOGNITION_SILENCE_MS = 2200;
+
   var activeRecognition = null;
 
   function startRecognition(opts) {
@@ -204,32 +211,105 @@
 
     rec.lang = opts.lang || 'en-US';
     rec.interimResults = true;
-    rec.continuous = false;
     rec.maxAlternatives = 1;
 
-    var finalText = '';
-    var finished = false;
-
-    function finish(reason) {
-      if (finished) return;
-      finished = true;
-      activeRecognition = null;
-      if (opts.onEnd) opts.onEnd(finalText, reason);
+    // 긴 문장(10~18단어)에서 숨 한 번 쉬었다고 중간에 끊기지 않도록 연속 인식을 시도.
+    // 지원하지 않거나 예외를 내는 브라우저에서는 단발 인식으로 폴백합니다.
+    var continuousOk = false;
+    try {
+      rec.continuous = true;
+      continuousOk = rec.continuous === true;
+    } catch (e) { continuousOk = false; }
+    if (!continuousOk) {
+      try { rec.continuous = false; } catch (e2) {}
     }
 
-    rec.onresult = function (event) {
-      var interim = '';
-      for (var i = event.resultIndex; i < event.results.length; i++) {
-        var res = event.results[i];
-        if (res.isFinal) finalText += res[0].transcript + ' ';
-        else interim += res[0].transcript;
+    var finalText = '';      // 확정된 조각 (매 onresult마다 0부터 재조합)
+    var interimText = '';    // 아직 확정되지 않은 조각
+    var lastHeard = '';      // 지금까지 들린 최신 전체 텍스트 (iOS 안전망)
+    var finished = false;
+    var started = false;
+    var stopRequested = false;
+    var startDelayTimer = null;
+    var silenceTimer = null;
+
+    var handle = {};
+
+    function clearStartDelay() {
+      if (startDelayTimer) { clearTimeout(startDelayTimer); startDelayTimer = null; }
+    }
+
+    function clearSilence() {
+      if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
+    }
+
+    function finish(reason, silent) {
+      if (finished) return;
+      finished = true;
+      clearStartDelay();
+      clearSilence();
+      if (activeRecognition === handle) activeRecognition = null;
+      if (silent) return;
+      // iOS는 final 결과를 못 주거나 onend 시점에 비어 있는 경우가 있어
+      // 마지막으로 들린 텍스트(lastHeard = 확정 + 미확정 전체)를 버리지 않고 넘깁니다.
+      var text = String(lastHeard || finalText || '').replace(/\s+/g, ' ').trim();
+      if (opts.onEnd) opts.onEnd(text, reason || 'end');
+    }
+
+    function requestStop(reason) {
+      if (stopRequested) return;
+      stopRequested = true;
+      clearSilence();
+      try {
+        rec.stop();
+      } catch (e) {
+        try { rec.abort(); } catch (e2) {}
+        finish(reason || 'stop-failed');
       }
-      if (opts.onInterim) opts.onInterim(interim, finalText.trim());
+    }
+
+    // 말이 잡힌 뒤 조용해지면 자동 완료 (발화가 이어지면 타이머 리셋)
+    function armSilence() {
+      clearSilence();
+      silenceTimer = setTimeout(function () {
+        silenceTimer = null;
+        if (finished) return;
+        requestStop('silence');
+      }, RECOGNITION_SILENCE_MS);
+    }
+
+    rec.onstart = function () { started = true; };
+
+    rec.onresult = function (event) {
+      // iOS Safari는 resultIndex를 잘못 주는(중복·누락) 경우가 있어
+      // 매번 0부터 전체를 다시 조립합니다.
+      var results = (event && event.results) || [];
+      var finals = [];
+      var interims = [];
+      for (var i = 0; i < results.length; i++) {
+        var res = results[i];
+        if (!res || !res[0]) continue;
+        var t = String(res[0].transcript || '').replace(/\s+/g, ' ').trim();
+        if (!t) continue;
+        if (res.isFinal) finals.push(t);
+        else interims.push(t);
+      }
+      finalText = finals.join(' ').trim();
+      interimText = interims.join(' ').trim();
+
+      var heard = (finalText + ' ' + interimText).replace(/\s+/g, ' ').trim();
+      if (heard) {
+        lastHeard = heard;
+        armSilence();
+      }
+
+      if (opts.onInterim) opts.onInterim(interimText, finalText);
     };
 
     rec.onerror = function (event) {
       var code = (event && event.error) || 'error';
-      // no-speech / aborted 는 흐름상 정상 종료로 처리
+      clearSilence();
+      // no-speech / aborted 는 흐름상 정상 종료로 처리 (들린 텍스트는 살림)
       if (code === 'no-speech' || code === 'aborted') {
         finish(code);
         return;
@@ -240,24 +320,45 @@
 
     rec.onend = function () { finish('end'); };
 
-    try {
-      rec.start();
-    } catch (e) {
-      if (opts.onError) opts.onError('start-failed');
-      return null;
-    }
-
-    activeRecognition = {
-      stop: function () { try { rec.stop(); } catch (e) {} },
-      abort: function () { try { rec.abort(); } catch (e) {} finished = true; activeRecognition = null; }
+    handle.stop = function () {
+      // 아직 마이크가 열리기 전(지연 구간)이면 시작 자체를 취소
+      if (!started && startDelayTimer) {
+        finish('canceled', true);
+        return;
+      }
+      requestStop('manual');
     };
-    return activeRecognition;
+    handle.abort = function () {
+      clearStartDelay();
+      clearSilence();
+      stopRequested = true;
+      try { rec.abort(); } catch (e) {}
+      finish('aborted', true);
+    };
+    activeRecognition = handle;
+
+    // iOS 오디오 세션 충돌 방지: TTS·재생을 먼저 멈추고 잠깐 뒤 마이크를 엽니다.
+    try { stopSpeaking(); } catch (e) {}
+    try { stopAudio(); } catch (e) {}
+    startDelayTimer = setTimeout(function () {
+      startDelayTimer = null;
+      if (finished) return;
+      try {
+        rec.start();
+      } catch (err) {
+        if (opts.onError) opts.onError('start-failed');
+        finish('start-failed');
+      }
+    }, RECOGNITION_START_DELAY_MS);
+
+    return handle;
   }
 
   function stopRecognition() {
     if (activeRecognition) {
-      try { activeRecognition.stop(); } catch (e) {}
+      var h = activeRecognition;
       activeRecognition = null;
+      try { h.stop(); } catch (e) {}
     }
   }
 
