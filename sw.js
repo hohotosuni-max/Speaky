@@ -1,7 +1,7 @@
 /* ============================================================
    Speaky — 서비스 워커 (앱 셸 오프라인 캐시)
    ============================================================ */
-const VERSION = 'speaky-v1.0.4';
+const VERSION = 'speaky-v1.0.5';
 const CORE = [
   './',
   './index.html',
@@ -54,6 +54,22 @@ self.addEventListener('fetch', (event) => {
           return res;
         })
         .catch(() => caches.match(req).then((hit) => hit || caches.match('./index.html')))
+    );
+    return;
+  }
+
+  // 스크립트: 최신 반영 우선 (네트워크 → 실패 시 캐시). 업데이트 직후 첫 실행에서도 새 JS가 쓰입니다.
+  if (req.destination === 'script' || /\.js$/i.test(url.pathname)) {
+    event.respondWith(
+      fetch(req)
+        .then((res) => {
+          if (res && res.ok) {
+            const copy = res.clone();
+            caches.open(VERSION).then((c) => c.put(req, copy));
+          }
+          return res;
+        })
+        .catch(() => caches.match(req).then((hit) => hit || new Response('', { status: 504, statusText: 'offline' })))
     );
     return;
   }
