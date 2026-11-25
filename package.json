@@ -1,0 +1,14 @@
+{
+  "name": "speaky-english-speaking-app",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Speaky — 성인과 아이가 함께 쓰는 PWA 영어 말하기 앱 (따라 말하기 + AI 롤플레이)",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
