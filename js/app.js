@@ -108,6 +108,26 @@
     toastTimer = setTimeout(function () { el.classList.remove('show'); }, ms || 2400);
   }
 
+  /* ── iOS 홈 화면 앱(standalone) 음성인식 안내 ────── */
+  function isIOSStandalone() {
+    var nav = window.navigator || {};
+    var ua = nav.userAgent || '';
+    // iPadOS 13+는 데스크톱(Macintosh)으로 보고되므로 터치 지원 여부까지 확인
+    var iOS = /iPad|iPhone|iPod/.test(ua) || (nav.platform === 'MacIntel' && nav.maxTouchPoints > 1);
+    var standalone = nav.standalone === true ||
+      !!(window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
+    return iOS && standalone;
+  }
+
+  // 데모 모드(서버·키 없음) + iOS 홈 화면 앱 조합은 webkitSpeechRecognition이 막히는 경우가 많습니다.
+  function needsStandaloneMicHint() {
+    return !AI.isLive() && isIOSStandalone();
+  }
+
+  function showStandaloneMicHint() {
+    toast('아이폰 홈 화면 앱에서는 기본 음성인식이 제한돼요. Safari로 열거나 ⚙️ 설정에 OpenAI 키를 넣으면 작동해요.', 5600);
+  }
+
   /* ── 시트 ──────────────────────────────────────── */
   function openSheet(id) {
     var el = $(id);
@@ -395,15 +415,20 @@
     SPEECH.stopSpeaking();
     recognitionFailed = false;
 
-    if (!SPEECH.recognitionAvailable() && !SPEECH.recordingAvailable()) {
+    var canRecord = AI.isLive() && SPEECH.recordingAvailable();
+    var canRecognize = SPEECH.recognitionAvailable();
+
+    if (!canRecord && !canRecognize) {
       showTypeInput('이 기기에서는 마이크를 쓸 수 없어요. 텍스트로 연습해 보세요.');
       return;
     }
 
-    if (SPEECH.recognitionAvailable()) {
-      startDrillRecognition();
-    } else if (AI.isLive() && SPEECH.recordingAvailable()) {
+    // AI가 켜져 있으면 Whisper 녹음 방식을 먼저 사용합니다.
+    // (iOS 홈 화면 앱에서는 webkitSpeechRecognition이 먹통이 되는 경우가 많아 우선순위를 뒤집음)
+    if (canRecord) {
       startDrillRecording();
+    } else if (canRecognize) {
+      startDrillRecognition();
     } else {
       showTypeInput('이 브라우저는 음성 인식을 지원하지 않아요. 들린 대로 입력해 보세요.');
     }
@@ -442,13 +467,16 @@
         } else {
           $('micLabel').textContent = '잘 안 들렸어요. 한 번 더 말해 볼까요?';
           $('micLabel').classList.remove('live');
+          if (needsStandaloneMicHint()) showStandaloneMicHint();
         }
       }
     });
   }
 
   function handleRecognitionError(code) {
-    if (code === 'not-allowed' || code === 'service-not-allowed') {
+    if ((code === 'service-not-allowed' || code === 'start-failed') && needsStandaloneMicHint()) {
+      showStandaloneMicHint();
+    } else if (code === 'not-allowed' || code === 'service-not-allowed') {
       toast('마이크 권한이 필요해요. 브라우저 설정에서 허용해 주세요.', 3400);
     } else if (code === 'network') {
       toast('음성 인식 서버에 연결하지 못했어요.', 3000);
@@ -461,6 +489,7 @@
     $('micLabel').textContent = '음성 인식이 어려워요. 텍스트로 연습해 보세요.';
     $('micLabel').classList.remove('live');
     showTypeInput('음성 인식이 되지 않아 텍스트 입력으로 바꿨어요. (아이폰은 설정에서 음성 인식을 켜 주세요)');
+    if (needsStandaloneMicHint()) showStandaloneMicHint();
   }
 
   function stopListening() {
@@ -876,10 +905,14 @@
       return;
     }
 
-    if (SPEECH.recognitionAvailable()) {
-      startChatRecognition();
-    } else if (AI.isLive() && SPEECH.recordingAvailable()) {
+    var canRecord = AI.isLive() && SPEECH.recordingAvailable();
+    var canRecognize = SPEECH.recognitionAvailable();
+
+    // 따라 말하기와 같이, AI가 켜져 있으면 Whisper 녹음을 먼저 사용합니다.
+    if (canRecord) {
       startChatRecording();
+    } else if (canRecognize) {
+      startChatRecognition();
     } else {
       $('chatInput').focus();
       toast('음성 인식이 없는 브라우저예요. 텍스트로 입력해 주세요.', 2600);
@@ -920,6 +953,9 @@
         } else if (recognitionFailed) {
           $('chatInput').focus();
           toast('음성 인식이 어려워요. 텍스트로 입력해 주세요.', 2600);
+          if (needsStandaloneMicHint()) showStandaloneMicHint();
+        } else if (needsStandaloneMicHint()) {
+          showStandaloneMicHint();
         }
       }
     });
