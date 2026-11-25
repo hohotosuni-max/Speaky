@@ -1,7 +1,7 @@
 /* ============================================================
    Speaky — 서비스 워커 (앱 셸 오프라인 캐시)
    ============================================================ */
-const VERSION = 'speaky-v1.0.5';
+const VERSION = 'speaky-v1.0.6';
 const CORE = [
   './',
   './index.html',
@@ -27,11 +27,22 @@ self.addEventListener('install', (event) => {
 });
 
 self.addEventListener('activate', (event) => {
-  event.waitUntil(
-    caches.keys().then((keys) =>
-      Promise.all(keys.filter((k) => k !== VERSION).map((k) => caches.delete(k)))
-    ).then(() => self.clients.claim())
-  );
+  event.waitUntil((async () => {
+    const keys = await caches.keys();
+    const isUpdate = keys.some((k) => k !== VERSION);
+    await Promise.all(keys.filter((k) => k !== VERSION).map((k) => caches.delete(k)));
+    await self.clients.claim();
+
+    // 새 버전이 켜질 때 이미 열려 있는 화면은 예전 JS를 들고 있으므로 한 번 새로 불러옵니다.
+    // (업데이트당 1회 — 첫 설치에는 하지 않습니다. 지원하지 않는 브라우저는 조용히 무시)
+    if (!isUpdate) return;
+    try {
+      const list = await self.clients.matchAll({ type: 'window' });
+      for (const client of list) {
+        try { client.navigate(client.url).catch(() => {}); } catch (e) {}
+      }
+    } catch (e) { /* 무시 */ }
+  })());
 });
 
 self.addEventListener('fetch', (event) => {
